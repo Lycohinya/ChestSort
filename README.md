@@ -1,6 +1,6 @@
 # ChestSort
 
-A Paper plugin for automatic chest and inventory sorting. Requires Paper 1.21.4 (or newer) and Java 21.
+A Paper/Folia plugin for automatic chest and inventory sorting. Built against the Lophine 26.3 API (used by Lecithin 26.3) and requires Java 25.
 
 ## Download & more information
 

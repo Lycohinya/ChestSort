@@ -4,6 +4,7 @@ import de.jeff_media.chestsort.ChestSortPlugin;
 import de.jeff_media.chestsort.data.PlayerSetting;
 import de.jeff_media.chestsort.gui.tracker.CustomGUITracker;
 import de.jeff_media.chestsort.gui.tracker.CustomGUIType;
+import de.jeff_media.chestsort.utils.SchedulerUtils;
 import org.bukkit.Bukkit;
 import org.bukkit.NamespacedKey;
 import org.bukkit.command.CommandSender;
@@ -25,8 +26,13 @@ public class GUIListener implements Listener {
 
     @EventHandler
     public void onClick(InventoryClickEvent event) {
-        if (CustomGUITracker.getType(event.getView()) == CustomGUIType.NEW) {
-            event.setCancelled(true);
+        if (CustomGUITracker.getType(event.getView()) != CustomGUIType.NEW) {
+            // Buttons only work inside ChestSort's GUI, never as items carried into other inventories
+            return;
+        }
+        event.setCancelled(true);
+        if (event.getClickedInventory() != event.getView().getTopInventory()) {
+            return;
         }
 
         ItemStack clicked = event.getCurrentItem();
@@ -37,7 +43,8 @@ public class GUIListener implements Listener {
             return;
         }
 
-        PlayerSetting setting = plugin.getPlayerSetting(player);
+        // Inventory events run on the clicking player's thread
+        PlayerSetting setting = plugin.registerPlayerIfNeeded(player);
         ItemMeta meta = clicked.getItemMeta();
 
         String function = meta.getPersistentDataContainer().getOrDefault(new NamespacedKey(plugin, "function"), PersistentDataType.STRING, "");
@@ -61,8 +68,14 @@ public class GUIListener implements Listener {
                 return;
             }
         }
+        plugin.savePlayerSetting(player, setting);
 
-        new NewUI(player).showGUI();
+        // Inventories must not be opened from inside a click event; reopen on the player's next tick
+        player.getScheduler().run(plugin, task -> {
+            if (CustomGUITracker.getType(player.getOpenInventory()) == CustomGUIType.NEW) {
+                new NewUI(player).showGUI();
+            }
+        }, null);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -72,7 +85,13 @@ public class GUIListener implements Listener {
 
     private void executeCommands(Player player, CommandSender sender, List<String> commands) {
         for (String command : commands) {
-            plugin.getServer().dispatchCommand(sender, command.replace("{player}", player.getName()));
+            String commandLine = command.replace("{player}", player.getName());
+            if (sender instanceof Player) {
+                plugin.getServer().dispatchCommand(sender, commandLine);
+            } else {
+                // Console commands execute on the global region, not on the player's region
+                SchedulerUtils.runGlobal(() -> plugin.getServer().dispatchCommand(sender, commandLine));
+            }
         }
     }
 }

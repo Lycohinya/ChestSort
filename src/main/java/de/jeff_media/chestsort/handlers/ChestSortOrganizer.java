@@ -27,6 +27,8 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -47,11 +49,17 @@ public class ChestSortOrganizer {
     public final List<Category> categories = new ArrayList<>();
     final ChestSortPlugin plugin;
     final List<String> stickyCategoryNames = new ArrayList<>();
-    private final WeakHashMap<Inventory, Void> sortableInventories = new WeakHashMap<>();
-    private final WeakHashMap<Inventory, Void> unsortableInventories = new WeakHashMap<>();
+    // Written by API callers and read by every region thread; even WeakHashMap#get mutates, so synchronize.
+    private final Map<Inventory, Boolean> sortableInventories;
+    private final Map<Inventory, Boolean> unsortableInventories;
 
-    public ChestSortOrganizer(ChestSortPlugin plugin) {
+    /**
+     * @param previous the organizer being replaced by a reload, whose API sortable/unsortable marks are kept
+     */
+    public ChestSortOrganizer(ChestSortPlugin plugin, ChestSortOrganizer previous) {
         this.plugin = plugin;
+        this.sortableInventories = previous != null ? previous.sortableInventories : Collections.synchronizedMap(new WeakHashMap<>());
+        this.unsortableInventories = previous != null ? previous.unsortableInventories : Collections.synchronizedMap(new WeakHashMap<>());
 
         File categoriesFolder = new File(plugin.getDataFolder(), "categories");
         File[] categoryFiles = categoriesFolder.listFiles((directory, fileName) ->
@@ -107,11 +115,11 @@ public class ChestSortOrganizer {
     }
 
     public void setSortable(Inventory inv) {
-        sortableInventories.put(inv, null);
+        sortableInventories.put(inv, Boolean.TRUE);
     }
 
     public void setUnsortable(Inventory inv) {
-        unsortableInventories.put(inv, null);
+        unsortableInventories.put(inv, Boolean.TRUE);
     }
 
     public boolean isMarkedAsSortable(Inventory inv) {
@@ -314,8 +322,16 @@ public class ChestSortOrganizer {
         sortInventory(inv, 0, inv.getSize() - 1);
     }
 
+    /**
+     * Sorts the given slot range. Must run on the thread owning the inventory; see
+     * {@link de.jeff_media.chestsort.api.ChestSortAPI} for callers on other threads.
+     */
     public void sortInventory(Inventory inv, int startSlot, int endSlot) {
         if (inv == null || unsortableInventories.containsKey(inv)) {
+            return;
+        }
+        if (startSlot < 0 || endSlot >= inv.getSize() || startSlot > endSlot) {
+            plugin.debug("Not sorting invalid slot range " + startSlot + "-" + endSlot + " of an inventory with " + inv.getSize() + " slots");
             return;
         }
         plugin.debug("Attempting to sort an Inventory and calling ChestSortEvent.");
@@ -362,12 +378,6 @@ public class ChestSortOrganizer {
             }
         }
 
-        for (int i = startSlot; i <= endSlot; i++) {
-            if (!unsortableSlots.contains(i)) {
-                inv.clear(i);
-            }
-        }
-
         record SortableItem(ItemStack item, String sortKey) {
         }
 
@@ -379,24 +389,41 @@ public class ChestSortOrganizer {
         }
         sortableItems.sort(Comparator.comparing(SortableItem::sortKey));
 
+        // Build the sorted (and merged) layout before touching the inventory. The items are live mirrors of the
+        // slots, so only clones may be handed to addItem, which modifies the stacks it is given.
         Inventory tempInventory = Bukkit.createInventory(null, MAX_INVENTORY_SIZE);
         for (SortableItem sortableItem : sortableItems) {
             if (plugin.isDebug()) {
                 plugin.getLogger().info(sortableItem.sortKey());
             }
-            tempInventory.addItem(sortableItem.item());
+            if (!tempInventory.addItem(sortableItem.item().clone()).isEmpty()) {
+                plugin.debug("Sorting aborted: the sorted items do not fit, nothing was changed.");
+                return;
+            }
+        }
+        List<ItemStack> sorted = new ArrayList<>();
+        for (ItemStack item : tempInventory.getContents()) {
+            if (item != null) {
+                sorted.add(item);
+            }
+        }
+        if (sorted.size() > endSlot - startSlot + 1 - unsortableSlots.size()) {
+            plugin.debug("Sorting aborted: the sorted items need more slots than available, nothing was changed.");
+            return;
         }
 
         int currentSlot = startSlot;
-        for (ItemStack item : tempInventory.getContents()) {
-            if (item == null) {
-                break;
-            }
-            while (unsortableSlots.contains(currentSlot) && currentSlot < endSlot) {
+        for (ItemStack item : sorted) {
+            while (unsortableSlots.contains(currentSlot)) {
                 currentSlot++;
             }
             inv.setItem(currentSlot, item);
             currentSlot++;
+        }
+        for (; currentSlot <= endSlot; currentSlot++) {
+            if (!unsortableSlots.contains(currentSlot)) {
+                inv.clear(currentSlot);
+            }
         }
         plugin.debug("Sorting successful. I'll go back to bed now.");
 
@@ -419,8 +446,12 @@ public class ChestSortOrganizer {
         }
     }
 
+    /**
+     * Stacks above 64 or above their own max stack size are left in place: re-adding them would split them
+     * into more stacks than the slots they came from.
+     */
     public boolean isOversizedStack(ItemStack item) {
-        return item != null && item.getAmount() > 64;
+        return item != null && (item.getAmount() > 64 || item.getAmount() > item.getMaxStackSize());
     }
 
     private boolean doesInventoryContain(Inventory inv, Material mat) {
@@ -439,31 +470,58 @@ public class ChestSortOrganizer {
         if (destinationIsPlayerInventory) {
             for (int i = 0; i < 9; i++) {
                 hotbarStuff[i] = destination.getItem(i);
-                destination.setItem(i, getPlaceholderBlock());
             }
         }
 
         List<ItemStack> leftovers = new ArrayList<>();
+        try {
+            if (destinationIsPlayerInventory) {
+                // Fill the hotbar with placeholders so nothing is moved into it
+                for (int i = 0; i < 9; i++) {
+                    destination.setItem(i, getPlaceholderBlock());
+                }
+            }
 
-        for (int i = 0; i < source.getSize(); i++) {
-            ItemStack current = source.getItem(i);
-            if (current == null) continue;
-            if (onlyMatchingStuff && !doesInventoryContain(destination, current.getType())) continue;
-            if (isOversizedStack(current)) continue;
-            source.clear(i);
-            leftovers.addAll(destination.addItem(current).values());
-        }
+            for (int i = 0; i < source.getSize(); i++) {
+                ItemStack current = source.getItem(i);
+                if (current == null) continue;
+                if (onlyMatchingStuff && !doesInventoryContain(destination, current.getType())) continue;
+                if (isOversizedStack(current)) continue;
+                source.clear(i);
+                leftovers.addAll(destination.addItem(current).values());
+            }
 
-        origSource.addItem(leftovers.toArray(new ItemStack[0]));
-
-        if (destinationIsPlayerInventory) {
-            for (int i = 0; i < 9; i++) {
-                destination.setItem(i, hotbarStuff[i]);
+            leftovers = new ArrayList<>(origSource.addItem(leftovers.toArray(new ItemStack[0])).values());
+        } finally {
+            if (destinationIsPlayerInventory) {
+                for (int i = 0; i < 9; i++) {
+                    destination.setItem(i, hotbarStuff[i]);
+                }
             }
         }
+        dropLeftovers(leftovers, origSource, destination);
 
         updateInventoryView(destination);
         updateInventoryView(source);
+    }
+
+    /**
+     * Never delete items that fit nowhere: drop them at the player involved. Runs on that player's thread.
+     */
+    private void dropLeftovers(Collection<ItemStack> leftovers, Inventory... inventories) {
+        if (leftovers.isEmpty()) {
+            return;
+        }
+        for (Inventory inventory : inventories) {
+            if (inventory instanceof PlayerInventory playerInventory) {
+                HumanEntity player = playerInventory.getHolder();
+                for (ItemStack leftover : leftovers) {
+                    player.getWorld().dropItem(player.getLocation(), leftover);
+                }
+                return;
+            }
+        }
+        plugin.getLogger().warning("Could not return " + leftovers.size() + " item stack(s) after moving items: " + leftovers);
     }
 
     private ItemStack getPlaceholderBlock() {

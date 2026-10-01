@@ -1,10 +1,16 @@
 package de.jeff_media.chestsort.data;
 
-import de.jeff_media.chestsort.ChestSortPlugin;
-import de.jeff_media.chestsort.utils.SchedulerUtils;
 import org.bukkit.inventory.Inventory;
 
+import java.util.concurrent.TimeUnit;
+
+/**
+ * A player's sorting settings. Only read and modified on the thread owning that player.
+ */
 public class PlayerSetting {
+
+    // Second click of a fill/unload double click must follow within 10 ticks.
+    private static final long DOUBLE_CLICK_WINDOW_NANOS = TimeUnit.MILLISECONDS.toNanos(500);
 
     public boolean sortingEnabled;
     public boolean invSortingEnabled;
@@ -18,8 +24,11 @@ public class PlayerSetting {
     public boolean hasSeenMessage;
     public boolean changed;
     public Inventory guiInventory = null;
+    // Settings fingerprint the values were loaded under, so a reset never receives a stale write.
+    public final String fingerprint;
 
     DoubleClickType currentDoubleClick = DoubleClickType.NONE;
+    private long currentDoubleClickTime;
 
     public enum DoubleClickType {
         NONE, RIGHT_CLICK, LEFT_CLICK
@@ -27,7 +36,7 @@ public class PlayerSetting {
 
     public PlayerSetting(boolean sortingEnabled, boolean invSortingEnabled, boolean middleClick, boolean shiftClick,
                           boolean doubleClick, boolean shiftRightClick, boolean leftClick, boolean rightClick,
-                          boolean leftClickOutside, boolean changed, boolean hasSeenMessage) {
+                          boolean leftClickOutside, boolean changed, boolean hasSeenMessage, String fingerprint) {
         this.sortingEnabled = sortingEnabled;
         this.invSortingEnabled = invSortingEnabled;
         this.middleClick = middleClick;
@@ -39,18 +48,20 @@ public class PlayerSetting {
         this.leftClickOutside = leftClickOutside;
         this.changed = changed;
         this.hasSeenMessage = hasSeenMessage;
+        this.fingerprint = fingerprint;
     }
 
-    public DoubleClickType getCurrentDoubleClick(ChestSortPlugin plugin, DoubleClickType click) {
+    public DoubleClickType getCurrentDoubleClick(DoubleClickType click) {
         if (click == DoubleClickType.NONE) {
             return DoubleClickType.NONE;
         }
-        if (currentDoubleClick == click) {
+        long now = System.nanoTime();
+        if (currentDoubleClick == click && now - currentDoubleClickTime <= DOUBLE_CLICK_WINDOW_NANOS) {
             currentDoubleClick = DoubleClickType.NONE;
             return click;
         }
         currentDoubleClick = click;
-        SchedulerUtils.runTaskLater(null, () -> currentDoubleClick = DoubleClickType.NONE, 10);
+        currentDoubleClickTime = now;
         return DoubleClickType.NONE;
     }
 
