@@ -46,7 +46,7 @@ public class TabCompleter implements org.bukkit.command.TabCompleter {
 			}
 			return list;
 		}
-		if(command.getName().equalsIgnoreCase("invsort")) {
+		if(command.getName().equalsIgnoreCase("isort")) {
 			return getMatchingOptions(entered,invsortOptions);
 		}
 		return new ArrayList<>();

@@ -118,8 +118,7 @@ public class ChestSortListener implements org.bukkit.event.Listener {
             return;
         }
 
-        plugin.registerPlayerIfNeeded(event.getPlayer());
-        PlayerSetting playerSetting = plugin.getPlayerSetting(event.getPlayer());
+        PlayerSetting playerSetting = plugin.registerPlayerIfNeeded(event.getPlayer());
         if (!playerSetting.leftClickOutside) {
             return;
         }
@@ -136,7 +135,7 @@ public class ChestSortListener implements org.bukkit.event.Listener {
                     BlockFace.UP,
                     EquipmentSlot.HAND);
             Bukkit.getPluginManager().callEvent(testEvent);
-            if (testEvent.isCancelled() || testEvent.useInteractedBlock() == Event.Result.DENY) {
+            if (testEvent.useInteractedBlock() == Event.Result.DENY) {
                 return;
             }
         }
@@ -187,9 +186,7 @@ public class ChestSortListener implements org.bukkit.event.Listener {
         if (!p.hasPermission("chestsort.use.inventory") || !p.hasPermission("chestsort.automatic")) {
             return;
         }
-        plugin.registerPlayerIfNeeded(p);
-
-        PlayerSetting setting = plugin.getPerPlayerSettings().get(p.getUniqueId().toString());
+        PlayerSetting setting = plugin.registerPlayerIfNeeded(p);
         if (!setting.invSortingEnabled) {
             return;
         }
@@ -320,12 +317,12 @@ public class ChestSortListener implements org.bukkit.event.Listener {
             return false;
         }
 
-        plugin.registerPlayerIfNeeded(player);
-        PlayerSetting setting = plugin.getPerPlayerSettings().get(player.getUniqueId().toString());
+        PlayerSetting setting = plugin.registerPlayerIfNeeded(player);
 
-        if (!plugin.isSortingEnabled(player)) {
+        if (!setting.sortingEnabled) {
             if (!setting.hasSeenMessage) {
                 setting.hasSeenMessage = true;
+                plugin.savePlayerSetting(player, setting);
                 if (plugin.getConfig().getBoolean("show-message-when-using-chest")) {
                     player.sendMessage(Messages.COMMAND_HINT_ENABLE);
                 }
@@ -333,6 +330,7 @@ public class ChestSortListener implements org.bukkit.event.Listener {
             return false;
         } else if (!setting.hasSeenMessage) {
             setting.hasSeenMessage = true;
+            plugin.savePlayerSetting(player, setting);
             if (plugin.getConfig().getBoolean("show-message-when-using-chest-and-sorting-is-enabled")) {
                 player.sendMessage(Messages.COMMAND_HINT_DISABLE);
             }
@@ -384,7 +382,7 @@ public class ChestSortListener implements org.bukkit.event.Listener {
             return;
         }
 
-        plugin.registerPlayerIfNeeded(p);
+        PlayerSetting setting = plugin.registerPlayerIfNeeded(p);
 
         if (!plugin.getConfig().getBoolean("allow-sorting-hotkeys")) {
             return;
@@ -406,8 +404,6 @@ public class ChestSortListener implements org.bukkit.event.Listener {
         if (!isAPICall && holder == p && clicked != p.getInventory()) {
             return;
         }
-
-        PlayerSetting setting = plugin.getPerPlayerSettings().get(p.getUniqueId().toString());
 
         if (clicked == setting.guiInventory) {
             return;
@@ -558,8 +554,7 @@ public class ChestSortListener implements org.bukkit.event.Listener {
             return;
         }
 
-        plugin.registerPlayerIfNeeded(player);
-        PlayerSetting setting = plugin.getPerPlayerSettings().get(player.getUniqueId().toString());
+        PlayerSetting setting = plugin.registerPlayerIfNeeded(player);
 
         ChestSortEvent chestSortEvent = new ChestSortEvent(inventory);
         chestSortEvent.setPlayer(whoClicked);
@@ -579,7 +574,7 @@ public class ChestSortListener implements org.bukkit.event.Listener {
 
         if (event.isLeftClick() && setting.leftClick && player.hasPermission(Hotkey.getPermission(Hotkey.LEFT_CLICK))) {
             plugin.getLgr().logSort(player, Logger.SortCause.H_LEFT);
-            if (setting.getCurrentDoubleClick(plugin, PlayerSetting.DoubleClickType.LEFT_CLICK) == PlayerSetting.DoubleClickType.LEFT_CLICK) {
+            if (setting.getCurrentDoubleClick(PlayerSetting.DoubleClickType.LEFT_CLICK) == PlayerSetting.DoubleClickType.LEFT_CLICK) {
                 plugin.getOrganizer().stuffPlayerInventoryIntoAnother(player.getInventory(), inventory, false, chestSortEvent);
                 plugin.getOrganizer().sortInventory(inventory);
             } else {
@@ -587,7 +582,7 @@ public class ChestSortListener implements org.bukkit.event.Listener {
             }
         } else if (event.isRightClick() && setting.rightClick && player.hasPermission(Hotkey.getPermission(Hotkey.RIGHT_CLICK))) {
             plugin.getLgr().logSort(player, Logger.SortCause.H_RIGHT);
-            if (setting.getCurrentDoubleClick(plugin, PlayerSetting.DoubleClickType.RIGHT_CLICK) == PlayerSetting.DoubleClickType.RIGHT_CLICK) {
+            if (setting.getCurrentDoubleClick(PlayerSetting.DoubleClickType.RIGHT_CLICK) == PlayerSetting.DoubleClickType.RIGHT_CLICK) {
                 plugin.getOrganizer().stuffInventoryIntoAnother(inventory, player.getInventory(), inventory, false);
                 plugin.getOrganizer().sortInventory(player.getInventory(), 9, 35);
             } else {

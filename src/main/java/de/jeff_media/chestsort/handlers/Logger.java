@@ -36,8 +36,8 @@ public class Logger {
     }
 
     private String getPlayerSettings(Player p) {
-        if(plugin.getPerPlayerSettings().containsKey(p.getUniqueId().toString())) {
-            PlayerSetting s = plugin.getPerPlayerSettings().get(p.getUniqueId().toString());
+        PlayerSetting s = plugin.getPerPlayerSettings().get(p.getUniqueId().toString());
+        if(s != null) {
             return String.format("sorting: %s, invsorting: %s, middle-click: %s, shift-click: %s, double-click: %s, shift-right-click: %s, left-click: %s, right-click: %s, seen-msg: %s",
                     s.sortingEnabled, s.invSortingEnabled, s.middleClick, s.shiftClick, s.doubleClick, s.shiftRightClick, s.leftClick, s.rightClick, s.hasSeenMessage);
         } else {

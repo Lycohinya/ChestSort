@@ -5,9 +5,9 @@ import de.jeff_media.chestsort.config.Messages;
 import de.jeff_media.chestsort.data.PlayerSetting;
 import de.jeff_media.chestsort.gui.NewUI;
 import de.jeff_media.chestsort.handlers.Debugger;
+import de.jeff_media.chestsort.utils.SchedulerUtils;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
-import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -44,9 +44,6 @@ public class ChestSortCommand implements CommandExecutor {
             if (!sender.hasPermission("chestsort.resetplayersettings")) {
                 sendNoPermissionMessage(sender, command);
                 return true;
-            }
-            for (Player online : Bukkit.getOnlinePlayers()) {
-                plugin.unregisterPlayer(online);
             }
             plugin.incrementFingerprint();
             sender.sendMessage(Component.text("All player settings have been reset!", NamedTextColor.RED));
@@ -90,7 +87,14 @@ public class ChestSortCommand implements CommandExecutor {
             return true;
         }
 
-        plugin.registerPlayerIfNeeded(p);
+        // Normally already on the player's thread, but not for e.g. "execute as <player> run sort" from the console
+        String[] playerArgs = args;
+        SchedulerUtils.runForEntity(p, () -> handlePlayer(p, playerArgs));
+        return true;
+    }
+
+    private void handlePlayer(Player p, String[] args) {
+        PlayerSetting setting = plugin.registerPlayerIfNeeded(p);
 
         if (!plugin.getConfig().getBoolean("allow-automatic-sorting") || !p.hasPermission("chestsort.automatic")) {
             args = new String[]{"hotkeys"};
@@ -102,14 +106,12 @@ public class ChestSortCommand implements CommandExecutor {
 
         if (args.length > 0 && (args[0].equalsIgnoreCase("hotkeys") || args[0].equalsIgnoreCase("hotkey"))) {
             new NewUI(p).showGUI();
-            return true;
+            return;
         }
-
-        PlayerSetting setting = plugin.getPerPlayerSettings().get(p.getUniqueId().toString());
 
         if (args.length > 0 && !args[0].equalsIgnoreCase("toggle") && !args[0].equalsIgnoreCase("on") && !args[0].equalsIgnoreCase("off")) {
             p.sendMessage(Messages.invalidOptions("\"" + args[0] + "\"", "\"toggle\", \"on\", \"off\", \"hotkeys\""));
-            return true;
+            return;
         }
 
         if (args.length > 0) {
@@ -121,12 +123,14 @@ public class ChestSortCommand implements CommandExecutor {
                 }
             }
             setting.hasSeenMessage = true;
+            plugin.savePlayerSetting(p, setting);
             p.sendMessage(setting.sortingEnabled ? Messages.ACTIVATED : Messages.DEACTIVATED);
-            return true;
+            return;
         }
 
         setting.hasSeenMessage = true;
+        plugin.savePlayerSetting(p, setting);
         new NewUI(p).showGUI();
-        return true;
+        return;
     }
 }

@@ -14,8 +14,11 @@ import de.jeff_media.chestsort.handlers.Debugger;
 import de.jeff_media.chestsort.handlers.GenericGuiDetector;
 import de.jeff_media.chestsort.handlers.Logger;
 import de.jeff_media.chestsort.listeners.ChestSortListener;
+import de.jeff_media.chestsort.utils.SchedulerUtils;
+import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
+import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.HandlerList;
@@ -27,36 +30,39 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 public final class ChestSortPlugin extends JavaPlugin {
 
     private static ChestSortPlugin instance;
 
-    public ChestSortOrganizer organizer;
-    public final List<Pattern> blacklistedInventoryHolderClassNames = new ArrayList<>();
+    // Region threads read these concurrently; a reload builds new values and publishes them in one write.
+    public volatile ChestSortOrganizer organizer;
+    public volatile List<Pattern> blacklistedInventoryHolderClassNames = List.of();
 
-    private GenericGuiDetector genericGuiDetector;
-    private boolean debug = false;
-    private List<String> disabledWorlds = new ArrayList<>();
-    private final Map<UUID, Long> hotkeyCooldown = new HashMap<>();
-    private Logger lgr;
-    private ChestSortListener chestSortListener;
-    private Map<String, PlayerSetting> perPlayerSettings = new HashMap<>();
-    private ChestSortPermissionsHandler permissionsHandler;
-    private String sortingMethod;
-    private boolean usingMatchingConfig = true;
-    private boolean verbose = true;
-    private YamlConfiguration guiConfig = new YamlConfiguration();
-    private int settingsFingerprint = 0;
+    private volatile FileConfiguration config;
+    private volatile GenericGuiDetector genericGuiDetector;
+    private volatile boolean debug = false;
+    private volatile List<String> disabledWorlds = List.of();
+    private final Map<UUID, Long> hotkeyCooldown = new ConcurrentHashMap<>();
+    private volatile Logger lgr;
+    private volatile ChestSortListener chestSortListener;
+    private final Map<String, PlayerSetting> perPlayerSettings = new ConcurrentHashMap<>();
+    private final ChestSortPermissionsHandler permissionsHandler = new ChestSortPermissionsHandler(this);
+    private volatile String sortingMethod;
+    private volatile boolean usingMatchingConfig = true;
+    private volatile boolean verbose = true;
+    private volatile YamlConfiguration guiConfig = new YamlConfiguration();
+    private volatile int settingsFingerprint = 0;
 
     public static ChestSortPlugin getInstance() {
         return instance;
@@ -76,8 +82,31 @@ public final class ChestSortPlugin extends JavaPlugin {
         ConfigUpdater.updateConfig();
 
         createDirectories();
+    }
 
-        setDefaultConfigValues();
+    @Override
+    public FileConfiguration getConfig() {
+        FileConfiguration current = config;
+        if (current == null) {
+            reloadConfig();
+            current = config;
+        }
+        return current;
+    }
+
+    /**
+     * Loads config.yml into a new object and publishes it only once it is complete, so threads reading the
+     * config while a reload runs never see a half-loaded or concurrently mutated configuration.
+     */
+    @Override
+    public void reloadConfig() {
+        YamlConfiguration loaded = YamlConfiguration.loadConfiguration(new File(getDataFolder(), "config.yml"));
+        InputStream defaults = getResource("config.yml");
+        if (defaults != null) {
+            loaded.setDefaults(YamlConfiguration.loadConfiguration(new InputStreamReader(defaults, StandardCharsets.UTF_8)));
+        }
+        setDefaultConfigValues(loaded);
+        config = loaded;
     }
 
     private void createGUIConfig() {
@@ -137,7 +166,7 @@ public final class ChestSortPlugin extends JavaPlugin {
     }
 
     public void setDisabledWorlds(List<String> disabledWorlds) {
-        this.disabledWorlds = disabledWorlds == null ? new ArrayList<>() : disabledWorlds;
+        this.disabledWorlds = disabledWorlds == null ? List.of() : List.copyOf(disabledWorlds);
     }
 
     public GenericGuiDetector getGenericGuiDetector() {
@@ -176,21 +205,24 @@ public final class ChestSortPlugin extends JavaPlugin {
         return perPlayerSettings;
     }
 
-    public void setPerPlayerSettings(Map<String, PlayerSetting> perPlayerSettings) {
-        this.perPlayerSettings = perPlayerSettings;
-    }
-
     public ChestSortPermissionsHandler getPermissionsHandler() {
         return permissionsHandler;
     }
 
-    public void setPermissionsHandler(ChestSortPermissionsHandler permissionsHandler) {
-        this.permissionsHandler = permissionsHandler;
-    }
-
+    /**
+     * Returns the player's settings. On the player's own thread they are loaded if needed; from any other
+     * thread an unloaded player gets the configured defaults while loading is scheduled on their thread.
+     */
     public PlayerSetting getPlayerSetting(Player p) {
-        registerPlayerIfNeeded(p);
-        return getPerPlayerSettings().get(p.getUniqueId().toString());
+        PlayerSetting setting = perPlayerSettings.get(p.getUniqueId().toString());
+        if (setting != null && setting.fingerprint.equals(getFingerprint())) {
+            return setting;
+        }
+        if (Bukkit.isOwnedByCurrentRegion(p)) {
+            return registerPlayerIfNeeded(p);
+        }
+        SchedulerUtils.runForEntity(p, () -> registerPlayerIfNeeded(p));
+        return createPlayerSetting(null, getFingerprint());
     }
 
     public String getSortingMethod() {
@@ -214,17 +246,15 @@ public final class ChestSortPlugin extends JavaPlugin {
         if (cooldown == 0) {
             return false;
         }
-        long lastUsage = getHotkeyCooldown().getOrDefault(uuid, 0L);
         long currentTime = System.currentTimeMillis();
-        long difference = currentTime - lastUsage;
-        getHotkeyCooldown().put(uuid, currentTime);
+        Long lastUsage = getHotkeyCooldown().put(uuid, currentTime);
+        long difference = currentTime - (lastUsage == null ? 0L : lastUsage);
         debug("Difference: " + difference);
         return difference <= cooldown;
     }
 
     public boolean isSortingEnabled(Player p) {
-        registerPlayerIfNeeded(p);
-        return getPerPlayerSettings().get(p.getUniqueId().toString()).sortingEnabled;
+        return getPlayerSetting(p).sortingEnabled;
     }
 
     public boolean isUsingMatchingConfig() {
@@ -243,19 +273,17 @@ public final class ChestSortPlugin extends JavaPlugin {
         this.verbose = verbose;
     }
 
-    public void load(boolean reload) {
-        settingsFingerprint = 0;
+    // Reloads can be started from several threads at once (console and players); run them one at a time.
+    public synchronized void load(boolean reload) {
+        int fingerprint = 0;
         File fingerprintFile = new File(getDataFolder(), "settings.fingerprint");
         if (fingerprintFile.exists()) {
             YamlConfiguration yaml = YamlConfiguration.loadConfiguration(fingerprintFile);
-            settingsFingerprint = yaml.getInt("v", 0);
+            fingerprint = yaml.getInt("v", 0);
         }
+        settingsFingerprint = fingerprint;
 
-        if (reload) {
-            unregisterAllPlayers();
-            reloadConfig();
-        }
-
+        // Player settings are written to the PDC when they change, so a reload keeps the loaded settings.
         createConfig();
         setDebug(getConfig().getBoolean("debug"));
 
@@ -269,21 +297,21 @@ public final class ChestSortPlugin extends JavaPlugin {
 
         saveDefaultCategories();
 
-        blacklistedInventoryHolderClassNames.clear();
+        List<Pattern> blacklist = new ArrayList<>();
         for (String line : getConfig().getStringList("blocked-inventory-holders-regex")) {
             try {
-                blacklistedInventoryHolderClassNames.add(Pattern.compile(line));
+                blacklist.add(Pattern.compile(line));
             } catch (Exception e) {
                 getLogger().warning("Invalid regex in blocked-inventory-holders-regex: " + line);
             }
         }
+        blacklistedInventoryHolderClassNames = List.copyOf(blacklist);
 
         setVerbose(getConfig().getBoolean("verbose"));
         setLgr(new Logger(this, getConfig().getBoolean("log")));
         Messages.reload();
-        setOrganizer(new ChestSortOrganizer(this));
+        setOrganizer(new ChestSortOrganizer(this, getOrganizer()));
         setListener(new ChestSortListener(this));
-        setPermissionsHandler(new ChestSortPermissionsHandler(this));
         setSortingMethod(getConfig().getString("sorting-method"));
 
         getServer().getPluginManager().registerEvents(getListener(), this);
@@ -328,16 +356,25 @@ public final class ChestSortPlugin extends JavaPlugin {
             dump();
         }
 
+        // Permission attachments and the PDC belong to each player's own thread.
         for (Player p : getServer().getOnlinePlayers()) {
-            getPermissionsHandler().addPermissions(p);
+            SchedulerUtils.runForEntity(p, () -> {
+                getPermissionsHandler().removePermissions(p);
+                getPermissionsHandler().addPermissions(p);
+                registerPlayerIfNeeded(p);
+            });
         }
     }
 
     @Override
     public void onDisable() {
+        // The plugin is already disabled here, so nothing can be scheduled. During shutdown this thread owns
+        // every player; a player owned by another region is skipped (settings are already saved on change).
         for (Player player : getServer().getOnlinePlayers()) {
-            unregisterPlayer(player);
-            getPermissionsHandler().removePermissions(player);
+            if (Bukkit.isOwnedByCurrentRegion(player)) {
+                unregisterPlayer(player);
+                getPermissionsHandler().removePermissions(player);
+            }
         }
     }
 
@@ -347,26 +384,39 @@ public final class ChestSortPlugin extends JavaPlugin {
         load(false);
     }
 
-    public void incrementFingerprint() {
+    public synchronized void incrementFingerprint() {
         YamlConfiguration yaml = new YamlConfiguration();
         yaml.set("v", settingsFingerprint + 1);
-        settingsFingerprint++;
         try {
             yaml.save(new File(getDataFolder(), "settings.fingerprint"));
+            // Settings loaded under the old fingerprint are replaced by the defaults the next time they are used.
+            settingsFingerprint++;
             load(true);
         } catch (IOException e) {
             getLogger().warning("Could not save settings.fingerprint: " + e.getMessage());
         }
     }
 
-    public void registerPlayerIfNeeded(Player p) {
-        UUID uniqueId = p.getUniqueId();
-        if (getPerPlayerSettings().containsKey(uniqueId.toString())) {
-            return;
-        }
-
+    /**
+     * Loads the player's settings from their PDC unless they are loaded under the current fingerprint.
+     * Must run on the player's thread, which is the only thread that stores that player's settings.
+     */
+    public PlayerSetting registerPlayerIfNeeded(Player p) {
+        String uniqueId = p.getUniqueId().toString();
         String fingerprint = getFingerprint();
-        PersistentDataContainer pdc = p.getPersistentDataContainer();
+        PlayerSetting existing = getPerPlayerSettings().get(uniqueId);
+        if (existing != null && existing.fingerprint.equals(fingerprint)) {
+            return existing;
+        }
+        PlayerSetting settings = createPlayerSetting(p.getPersistentDataContainer(), fingerprint);
+        getPerPlayerSettings().put(uniqueId, settings);
+        return settings;
+    }
+
+    /**
+     * Reads settings stored under the given fingerprint, or the configured defaults if {@code pdc} is null.
+     */
+    private PlayerSetting createPlayerSetting(PersistentDataContainer pdc, String fingerprint) {
 
         boolean sortingEnabled = getStoredBoolean(pdc, "sortingEnabled" + fingerprint, getConfig().getBoolean("sorting-enabled-by-default"));
         boolean invSortingEnabled = getStoredBoolean(pdc, "invSortingEnabled" + fingerprint, getConfig().getBoolean("inv-sorting-enabled-by-default"));
@@ -380,13 +430,14 @@ public final class ChestSortPlugin extends JavaPlugin {
         boolean hasSeenMessage = !getConfig().getBoolean("show-message-again-after-logout")
                 && getStoredBoolean(pdc, "hasSeenMessage" + fingerprint, false);
 
-        PlayerSetting settings = new PlayerSetting(sortingEnabled, invSortingEnabled, middleClick, shiftClick, doubleClick,
-                shiftRightClick, leftClick, rightClick, leftClickOutside, true, hasSeenMessage);
-
-        getPerPlayerSettings().put(uniqueId.toString(), settings);
+        return new PlayerSetting(sortingEnabled, invSortingEnabled, middleClick, shiftClick, doubleClick,
+                shiftRightClick, leftClick, rightClick, leftClickOutside, true, hasSeenMessage, fingerprint);
     }
 
     private boolean getStoredBoolean(PersistentDataContainer pdc, String key, boolean fallback) {
+        if (pdc == null) {
+            return fallback;
+        }
         NamespacedKey namespacedKey = new NamespacedKey(this, key);
         try {
             Boolean stored = pdc.get(namespacedKey, PersistentDataType.BOOLEAN);
@@ -448,55 +499,53 @@ public final class ChestSortPlugin extends JavaPlugin {
         }
     }
 
-    private void setDefaultConfigValues() {
-        getConfig().addDefault("use-permissions", true);
-        getConfig().addDefault("allow-automatic-sorting", true);
-        getConfig().addDefault("allow-automatic-inventory-sorting", true);
-        getConfig().addDefault("allow-left-click-to-sort", true);
-        getConfig().addDefault("left-click-to-sort-enabled-by-default", false);
-        getConfig().addDefault("sorting-enabled-by-default", false);
-        getConfig().addDefault("inv-sorting-enabled-by-default", false);
-        getConfig().addDefault("show-message-when-using-chest", true);
-        getConfig().addDefault("show-message-when-using-chest-and-sorting-is-enabled", false);
-        getConfig().addDefault("show-message-again-after-logout", true);
-        getConfig().addDefault("sorting-method", "{category},{itemsFirst},{name},{color}");
-        getConfig().addDefault("auto-generate-category-files", true);
-        getConfig().addDefault("sort-time", "close");
-        getConfig().addDefault("allow-sorting-hotkeys", true);
-        getConfig().addDefault("allow-additional-hotkeys", true);
-        getConfig().addDefault("sorting-hotkeys.middle-click", true);
-        getConfig().addDefault("sorting-hotkeys.shift-click", true);
-        getConfig().addDefault("sorting-hotkeys.double-click", true);
-        getConfig().addDefault("sorting-hotkeys.shift-right-click", true);
-        getConfig().addDefault("additional-hotkeys.left-click", false);
-        getConfig().addDefault("additional-hotkeys.right-click", false);
-        getConfig().addDefault("dump", false);
-        getConfig().addDefault("log", false);
-        getConfig().addDefault("allow-commands", true);
-        getConfig().addDefault("prevent-sorting-null-inventories", false);
-        getConfig().addDefault("mute-protection-plugins", false);
-        getConfig().addDefault("verbose", true);
+    private static void setDefaultConfigValues(FileConfiguration config) {
+        config.addDefault("use-permissions", true);
+        config.addDefault("allow-automatic-sorting", true);
+        config.addDefault("allow-automatic-inventory-sorting", true);
+        config.addDefault("allow-left-click-to-sort", true);
+        config.addDefault("left-click-to-sort-enabled-by-default", false);
+        config.addDefault("sorting-enabled-by-default", false);
+        config.addDefault("inv-sorting-enabled-by-default", false);
+        config.addDefault("show-message-when-using-chest", true);
+        config.addDefault("show-message-when-using-chest-and-sorting-is-enabled", false);
+        config.addDefault("show-message-again-after-logout", true);
+        config.addDefault("sorting-method", "{category},{itemsFirst},{name},{color}");
+        config.addDefault("auto-generate-category-files", true);
+        config.addDefault("sort-time", "close");
+        config.addDefault("allow-sorting-hotkeys", true);
+        config.addDefault("allow-additional-hotkeys", true);
+        config.addDefault("sorting-hotkeys.middle-click", true);
+        config.addDefault("sorting-hotkeys.shift-click", true);
+        config.addDefault("sorting-hotkeys.double-click", true);
+        config.addDefault("sorting-hotkeys.shift-right-click", true);
+        config.addDefault("additional-hotkeys.left-click", false);
+        config.addDefault("additional-hotkeys.right-click", false);
+        config.addDefault("dump", false);
+        config.addDefault("log", false);
+        config.addDefault("allow-commands", true);
+        config.addDefault("prevent-sorting-null-inventories", false);
+        config.addDefault("mute-protection-plugins", false);
+        config.addDefault("verbose", true);
     }
 
-    void unregisterAllPlayers() {
-        if (!getPerPlayerSettings().isEmpty()) {
-            for (String uuid : List.copyOf(getPerPlayerSettings().keySet())) {
-                Player p = getServer().getPlayer(UUID.fromString(uuid));
-                if (p != null) {
-                    unregisterPlayer(p);
-                }
-            }
-        }
-    }
-
+    /**
+     * Saves the player's settings and forgets them. Must run on the player's thread.
+     */
     public void unregisterPlayer(Player p) {
         UUID uniqueId = p.getUniqueId();
-        PlayerSetting setting = getPerPlayerSettings().get(uniqueId.toString());
-        if (setting == null) {
-            return;
+        getHotkeyCooldown().remove(uniqueId);
+        PlayerSetting setting = getPerPlayerSettings().remove(uniqueId.toString());
+        if (setting != null) {
+            savePlayerSetting(p, setting);
         }
+    }
 
-        String fingerprint = getFingerprint();
+    /**
+     * Writes the settings to the player's PDC. Must run on the player's thread.
+     */
+    public void savePlayerSetting(Player p, PlayerSetting setting) {
+        String fingerprint = setting.fingerprint;
         PersistentDataContainer pdc = p.getPersistentDataContainer();
 
         setStoredBoolean(pdc, "sortingEnabled" + fingerprint, setting.sortingEnabled);
@@ -509,7 +558,5 @@ public final class ChestSortPlugin extends JavaPlugin {
         setStoredBoolean(pdc, "leftClick" + fingerprint, setting.leftClick);
         setStoredBoolean(pdc, "rightClick" + fingerprint, setting.rightClick);
         setStoredBoolean(pdc, "leftClickOutside" + fingerprint, setting.leftClickOutside);
-
-        getPerPlayerSettings().remove(uniqueId.toString());
     }
 }

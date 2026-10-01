@@ -4,6 +4,7 @@ import de.jeff_media.chestsort.ChestSortPlugin;
 import de.jeff_media.chestsort.config.Messages;
 import de.jeff_media.chestsort.data.PlayerSetting;
 import de.jeff_media.chestsort.handlers.Logger;
+import de.jeff_media.chestsort.utils.SchedulerUtils;
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -52,10 +53,18 @@ public class InvSortCommand implements CommandExecutor {
             p = (Player) sender;
         }
 
+        // A console sender runs on the global region; the target's inventory and settings belong to the target's thread.
+        Player target = p;
+        String[] targetArgs = args;
+        SchedulerUtils.runForEntity(target, () -> sortOrToggle(target, targetArgs));
+        return true;
+    }
+
+    private void sortOrToggle(Player p, String[] args) {
         int start = 9;
         int end = 35;
 
-        PlayerSetting setting = plugin.getPerPlayerSettings().get(p.getUniqueId().toString());
+        PlayerSetting setting = plugin.registerPlayerIfNeeded(p);
 
         if (!plugin.getConfig().getBoolean("allow-automatic-inventory-sorting")
                 && (args.length == 0 || args[0].equalsIgnoreCase("on") || args[0].equalsIgnoreCase("off") || args[0].equalsIgnoreCase("toggle"))) {
@@ -78,22 +87,25 @@ public class InvSortCommand implements CommandExecutor {
                 }
                 case "on" -> {
                     setting.enableInvSorting();
+                    plugin.savePlayerSetting(p, setting);
                     p.sendMessage(Messages.INV_ACTIVATED);
-                    return true;
+                    return;
                 }
                 case "off" -> {
                     setting.disableInvSorting();
+                    plugin.savePlayerSetting(p, setting);
                     p.sendMessage(Messages.INV_DEACTIVATED);
-                    return true;
+                    return;
                 }
                 case "toggle" -> {
                     setting.toggleInvSorting();
+                    plugin.savePlayerSetting(p, setting);
                     p.sendMessage(setting.invSortingEnabled ? Messages.INV_ACTIVATED : Messages.INV_DEACTIVATED);
-                    return true;
+                    return;
                 }
                 default -> {
                     p.sendMessage(Messages.invalidOptions("\"" + args[0] + "\"", "\"on\", \"off\", \"toggle\", \"inv\", \"hotbar\", \"all\""));
-                    return true;
+                    return;
                 }
             }
         }
@@ -101,7 +113,5 @@ public class InvSortCommand implements CommandExecutor {
         plugin.getLgr().logSort(p, Logger.SortCause.CMD_ISORT);
         plugin.getOrganizer().sortInventory(p.getInventory(), start, end);
         p.sendMessage(Messages.PLAYER_INVENTORY_SORTED);
-
-        return true;
     }
 }
