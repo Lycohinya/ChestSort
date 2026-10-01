@@ -17,13 +17,14 @@ java {
 }
 
 repositories {
-    // Lecithin publishes no API of its own; it uses its upstream Lophine API (paper-api + folia-api + lophine-api).
-    maven("https://repo.bacteriawa.com/repository/maven-public/")
-    maven("https://repo.papermc.io/repository/maven-public/")
+  maven {
+    name = "papermc"
+    url = uri("https://repo.papermc.io/repository/maven-public/")
+  }
 }
 
 dependencies {
-    compileOnly("fun.bm.lophine:lophine-api:26.3.build.+")
+    compileOnly("io.papermc.paper:paper-api:26.3.build.+")
     compileOnly("org.jetbrains:annotations:26.0.2")
 }
 
