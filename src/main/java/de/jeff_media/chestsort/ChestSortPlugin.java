@@ -48,6 +48,7 @@ public final class ChestSortPlugin extends JavaPlugin {
     // Region threads read these concurrently; a reload builds new values and publishes them in one write.
     public volatile ChestSortOrganizer organizer;
     public volatile List<Pattern> blacklistedInventoryHolderClassNames = List.of();
+    public volatile List<Pattern> sortableInventoryHolderClassNames = List.of();
 
     private volatile FileConfiguration config;
     private volatile GenericGuiDetector genericGuiDetector;
@@ -306,6 +307,16 @@ public final class ChestSortPlugin extends JavaPlugin {
             }
         }
         blacklistedInventoryHolderClassNames = List.copyOf(blacklist);
+
+        List<Pattern> sortableHolders = new ArrayList<>();
+        for (String line : getConfig().getStringList("sortable-inventory-holders-regex")) {
+            try {
+                sortableHolders.add(Pattern.compile(line));
+            } catch (Exception e) {
+                getLogger().warning("Invalid regex in sortable-inventory-holders-regex: " + line);
+            }
+        }
+        sortableInventoryHolderClassNames = List.copyOf(sortableHolders);
 
         setVerbose(getConfig().getBoolean("verbose"));
         setLgr(new Logger(this, getConfig().getBoolean("log")));

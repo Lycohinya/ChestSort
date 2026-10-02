@@ -18,7 +18,7 @@ import java.util.logging.Logger;
 
 public final class ConfigUpdater {
 
-    private static final String[] LINES_CONTAINING_STRING_LISTS = {"disabled-worlds:", "blocked-inventory-holders-regex:"};
+    private static final String[] LINES_CONTAINING_STRING_LISTS = {"disabled-worlds:", "blocked-inventory-holders-regex:", "sortable-inventory-holders-regex:"};
     private static final String[] LINES_IGNORED = {"config-version:", "plugin-version:"};
     private static final String[] NODES_NEEDING_DOUBLE_QUOTES = {"message-", "sorting-method"};
 

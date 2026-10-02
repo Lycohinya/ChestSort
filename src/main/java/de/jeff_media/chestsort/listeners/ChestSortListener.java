@@ -197,6 +197,26 @@ public class ChestSortListener implements org.bukkit.event.Listener {
 
     @EventHandler
     public void onChestClose(InventoryCloseEvent event) {
+        if (!plugin.sortableInventoryHolderClassNames.isEmpty() && isConfiguredSortableHolder(event.getInventory().getHolder())) {
+            return;
+        }
+        sortOnClose(event);
+    }
+
+    /**
+     * Inventories of holders listed in sortable-inventory-holders-regex are copied back into an item (or similar) by
+     * the plugin that opened them when the inventory closes, so they must be sorted before that plugin's
+     * NORMAL priority InventoryCloseEvent handler reads the contents.
+     */
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onConfiguredHolderClose(InventoryCloseEvent event) {
+        if (plugin.sortableInventoryHolderClassNames.isEmpty() || !isConfiguredSortableHolder(event.getInventory().getHolder())) {
+            return;
+        }
+        sortOnClose(event);
+    }
+
+    private void sortOnClose(InventoryCloseEvent event) {
         Inventory inventory = event.getInventory();
 
         if (!plugin.getConfig().getBoolean("allow-automatic-sorting")) {
@@ -219,7 +239,8 @@ public class ChestSortListener implements org.bukkit.event.Listener {
         if (!p.hasPermission("chestsort.automatic")) {
             return;
         }
-        if (!isAPICall(inventory, holder) && !belongsToChestLikeBlock(inventory, holder)
+        if (!isAPICall(inventory, holder) && !isConfiguredSortableHolder(holder)
+                && !belongsToChestLikeBlock(inventory, holder)
                 && !LlamaUtils.belongsToLlama(inventory, holder)
                 && !plugin.getOrganizer().isMarkedAsSortable(inventory)) {
             return;
@@ -265,7 +286,8 @@ public class ChestSortListener implements org.bukkit.event.Listener {
         if (!p.hasPermission("chestsort.automatic")) {
             return;
         }
-        if (!isAPICall(inventory, holder) && !belongsToChestLikeBlock(inventory, holder)
+        if (!isAPICall(inventory, holder) && !isConfiguredSortableHolder(holder)
+                && !belongsToChestLikeBlock(inventory, holder)
                 && !LlamaUtils.belongsToLlama(inventory, holder)
                 && !plugin.getOrganizer().isMarkedAsSortable(inventory)) {
             return;
@@ -395,7 +417,7 @@ public class ChestSortListener implements org.bukkit.event.Listener {
         }
 
         InventoryHolder holder = clicked.getHolder();
-        boolean isAPICall = isAPICall(clicked, holder);
+        boolean isAPICall = isAPICall(clicked, holder) || isConfiguredSortableHolder(holder);
 
         if (!isAPICall && plugin.getGenericGuiDetector().isPluginGui(holder)) {
             plugin.debug("Aborting hotkey sorting: no API call & generic GUI detected");
@@ -495,6 +517,23 @@ public class ChestSortListener implements org.bukkit.event.Listener {
                 plugin.getOrganizer().updateInventoryView(event);
             }
         }
+    }
+
+    /**
+     * True if the holder's class name matches sortable-inventory-holders-regex. Only used for sorting the
+     * inventory itself; the additional hotkeys that move items between inventories never use it.
+     */
+    private boolean isConfiguredSortableHolder(InventoryHolder holder) {
+        if (holder == null) {
+            return false;
+        }
+        String className = holder.getClass().getName();
+        for (Pattern pattern : plugin.sortableInventoryHolderClassNames) {
+            if (pattern.matcher(className).matches()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean isAPICall(Inventory inv, InventoryHolder holder) {

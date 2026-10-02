@@ -246,6 +246,15 @@ mute-protection-plugins: false
 blocked-inventory-holders-regex:
 - ".*[Bb]ack[Pp]ack.*"
 
+##### Inventories that look like a plugin GUI but should be sortable #####
+# Holders whose class name matches one of these regexes are sorted like a chest: automatically when closed
+# (if the player enabled /chestsort) and with the sorting hotkeys, even if the class name contains "gui" or "menu".
+# Only the inventory itself is sorted; the additional hotkeys (left/right-click outside) never move items into it.
+# The plugin that opened the inventory must copy its contents back at InventoryCloseEvent.
+# Default: LycoServerTweaks' hand-held shulker box window.
+sortable-inventory-holders-regex:
+- com.tinyyana.lycoServerTweaks.inventory.ShulkerInHandGuiHolder
+
 ##########################
 ##### Sorting Method #####
 ##########################
