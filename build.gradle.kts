@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "de.jeff_media"
-version = "17.0.0"
+version = "17.0.0-lyco263"
 description = "Allows automatic chest sorting!"
 
 java {
